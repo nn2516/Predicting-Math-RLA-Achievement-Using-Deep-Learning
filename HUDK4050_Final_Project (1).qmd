@@ -1,0 +1,289 @@
+---
+title: "HUDK4050_Final_Project"
+author: "Group1"
+format: html
+editor: visual
+---
+
+### Initialization set up the environment
+
+```{r}
+install.packages("tidyverse")
+install.packages("ggplot2")
+install.packages("dplyr")
+install.packages("keras")
+install.packages("reticulate")
+install.packages("keras")
+install.packages("ISLR2")
+install.packages("tensorflow")
+install.packages("caret")
+install.packages("sklearn")
+```
+
+```{r}
+# load libraries
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(keras)
+library(tensorflow)
+library(reticulate)
+library(tidyr)
+library(caret)
+library(ISLR2)
+
+
+# clear environment
+rm(list=ls())
+```
+
+##### Load our data table. This data table was merged using data from NCES (<https://data-nces.opendata.arcgis.com/datasets/nces::public-school-characteristics-2019-20/explore?location=34.014820%2C-96.401190%2C4.51&showTable=true>) and SEDA (<https://edopportunity.org/get-the-data/seda-archive-downloads/>) version 4.1 using specifically the tables 'seda_school_pool_CS_4.1' and 'seda_cov_school_pool_4.1'. The NCES dataset provided us with latitude and longitue per school and the SEDA datasets provided school testscores (mn_cs_avg_ol) and some school covariates. We used school code to combine the datasets. Since SEDA was missing data for many states in the western US, we decided to focus on the eastern US for which there was SEDA data.
+
+```{r}
+Data <- read.csv('/Users/jonathanchastain/Desktop/Data_Table_02')
+```
+
+### Make some Plots
+
+##### Here, we are making plots to see where the schools in our dataset are located.
+
+```{r}
+# scatter plot of longiude and latitude
+ggplot(Data,aes(x=lon,y=lat,)) + geom_point()
+
+# scatter plot of longiude and latitude
+ggplot(Data[!is.na(Data$locale),],aes(x=lon,y=lat)) + geom_point()
+
+# scatter plot of longiude and latitude
+ggplot(Data[!is.na(Data$cs_mn_avg_ol),],aes(x=lon,y=lat)) + geom_point()
+```
+
+### Traditional Prediction Approach
+
+##### Before we work with the image dataset, however, we are trying out a more traditional approach by trying to predict the test scores from Poverty Estimates by the NCES as well as the gifted to total ratio of students at a school. To make the dependent variable work with a classification approach, we binned it first into 4 quartiles before reading in the data.
+
+```{r}
+#Add in poverty vaules pulled from https://nces.ed.gov/programs/edge/Economic/NeighborhoodPoverty and select poverty estimates, and gifted to total students ratio as predictors. Before, the outcome variable has to be reformatted a bit to work with python.
+Data <- read.csv('Poverty_And_All_Other_Data_for_ElementarySchools.csv')
+Data <- select(Data, c("Outcome_bin","IPR_EST","lep","gifted_tot"))
+Data["Outcome_bin"][Data["Outcome_bin"] == 1] <- 0
+Data["Outcome_bin"][Data["Outcome_bin"] == 2] <- 1
+Data["Outcome_bin"][Data["Outcome_bin"] == 3] <- 2
+Data["Outcome_bin"][Data["Outcome_bin"] == 4] <- 3
+Data$Outcome_bin <- to_categorical(Data$Outcome_bin, num_classes = 4)
+#Split the data into test and training dataset.
+train.dat <- Data
+n <- nrow(train.dat)
+set.seed (1337)
+ntest <- trunc(n / 3)
+testid <- sample (1:n, ntest)
+y <- Data$Outcome_bin
+x <- scale(model.matrix(Outcome_bin~.-1, data = train.dat))
+#Build the model for number 1 using sigmoid activation function.
+modnn <- keras_model_sequential () %>%
+  layer_dense(units = 100, activation = "relu", kernel_regularizer = regularizer_l2(0.05), input_shape = ncol(x)) %>%
+  layer_dropout(rate = 0.1) %>%
+  layer_dense(units = 100, kernel_regularizer = regularizer_l2(0.05), activation = "relu") %>%
+  layer_dropout(rate = 0.1) %>%
+  layer_dense(units = 4, activation = "softmax")
+#Compile the model using stochastic gradient descent.
+modnn %>% compile(loss = "mse", optimizer = optimizer_sgd(lr = 0.001, nesterov = TRUE), metrics = list("categorical_accuracy"))
+history <- modnn %>% fit(x[-testid , ], y[-testid], epochs = 500, batch_size = 128, validation_split = 0.2, verbose=1)
+plot(history)
+print(history)
+#trying out different parameters showed that mse as loss function and sgd with a low learning rate and nesterov worked best.
+```
+
+### Image Approach
+
+##### Load image Dataset for CNNs which we downloaded from the Google Static Maps API using the MATLAB function 'get_google_map' (<https://www.mathworks.com/matlabcentral/fileexchange/24113-get_google_map>)
+
+```{r}
+getwd()
+dir_list <- list.dirs("",recursive = FALSE) 
+```
+
+```{r}
+unzip("google_maps_satellite_227_227_14_classes.zip")
+```
+
+```{r}
+img_height <- as.integer(227)
+img_width <- as.integer(227)
+channels <- as.integer(3)
+batch_size <- as.integer(128)
+num_classes <- as.integer(4)
+```
+
+##### Here, we are creating the training and testing (validation) dataset.
+
+```{r}
+train_ds <- image_dataset_from_directory(
+    "google_maps_satellite_227_227_16_4_classes_elementary",
+    validation_split=0.2,
+    subset="training",
+    seed=1337,
+    image_size=c(img_height,img_width),
+    batch_size=batch_size
+)
+
+test_ds <- image_dataset_from_directory(
+    "google_maps_satellite_227_227_16_4_classes_elementary",
+    validation_split=0.2,
+    subset="validation",
+    seed=1337,
+    image_size=c(img_height,img_width),
+    batch_size=batch_size
+)
+
+```
+
+### CNN with early stopping:
+
+##### We then built several models trying to predict the achievement quartiles with different neural networks. The first one was a CNN model with early stopping.
+
+```{r}
+#Build model
+cnn_model <- keras_model_sequential() %>%
+  layer_rescaling(1/255, input_shape=c(img_height,img_width,channels)) %>%
+  layer_conv_2d(16, 3, padding='same', activation='relu') %>%
+  layer_max_pooling_2d() %>%
+  layer_conv_2d(32, 3, padding='same', activation='relu') %>%
+  layer_max_pooling_2d() %>%
+  layer_conv_2d(64, 3, padding='same', activation='relu') %>%
+  layer_max_pooling_2d() %>%
+  layer_flatten() %>%
+  layer_dense(128, 'relu') %>%
+  layer_dense(num_classes)
+```
+
+```{r}
+#from_logits should be set to true since softmax was not used in the last output layer
+#If softmax is used in the output layer then from_logits should be set to false (which is the default)
+cnn_model %>% compile(
+  loss = loss_sparse_categorical_crossentropy(from_logits = TRUE),
+  optimizer = optimizer_adam(),
+  metrics = c('accuracy')
+)
+```
+
+```{r}
+epochs <- 10
+cnn_history_3 <- cnn_model %>% fit(
+  train_ds,
+  epochs = epochs,
+  validation_data = test_ds,
+  verbose=1,
+  callbacks = list(callback_early_stopping(monitor = "val_accuracy", patience = 3, restore_best_weights = TRUE))
+)
+```
+
+```{r}
+plot(cnn_history_3)
+```
+
+```{r}
+str(cnn_history_3)
+```
+
+### CNN with data augmentation:
+
+##### We then tried a CNN with data augmentation, which, however, did not significantly improve our models performance.
+
+```{r}
+#Augment data
+data_augmentation <- keras_model_sequential() %>%
+  layer_random_flip("horizontal", input_shape=c(img_height,img_width,channels)) %>%
+  layer_random_rotation(0.1) %>%
+  layer_random_zoom(0.1)
+```
+
+```{r}
+#Build model with data augmentation
+cnn_model <- keras_model_sequential() %>%
+  data_augmentation %>%
+  layer_rescaling(1/255) %>%
+  layer_conv_2d(16, 3, padding='same', activation='relu') %>%
+  layer_max_pooling_2d() %>%
+  layer_conv_2d(32, 3, padding='same', activation='relu') %>%
+  layer_max_pooling_2d() %>%
+  layer_conv_2d(64, 3, padding='same', activation='relu') %>%
+  layer_max_pooling_2d() %>%
+  layer_dropout(0.2) %>%
+  layer_flatten() %>%
+  layer_dense(128, activation='relu') %>%
+  layer_dense(num_classes)
+```
+
+```{r}
+cnn_model %>% compile(
+  loss = loss_sparse_categorical_crossentropy(from_logits = TRUE),
+  optimizer = optimizer_adam(),
+  metrics = c('accuracy')
+)
+```
+
+```{r}
+epochs <- 3
+cnn_history <- cnn_model %>% fit(
+  train_ds,
+  epochs = epochs,
+  validation_data = test_ds,
+  verbose=1
+)
+#seting epochs to 7 gave us our highest accuary 
+```
+
+```{r}
+str(cnn_history)
+plot(cnn_history)
+```
+
+```{r}
+# Predict
+predictions <- cnn_model %>% predict(test_ds)
+predictions[1, ]
+which.max(predictions[1, ])
+```
+
+### CNN with learning rate schedule:
+
+##### We additionally tried a CNN with a learning rate schedule, with, again, did not improve our performance significantly.
+
+```{r}
+#Use a learning rate schedule
+opt <- optimizer_adam(learning_rate = learning_rate_schedule_exponential_decay(
+  initial_learning_rate = 5e-3, 
+  decay_rate = 0.96, 
+  decay_steps = 1500)
+  )
+
+```
+
+```{r}
+cnn_model %>% compile(
+  loss = loss_sparse_categorical_crossentropy(from_logits = TRUE),
+  optimizer = opt,
+  metrics = c('accuracy')
+)
+```
+
+```{r}
+epochs <- 10
+cnn_history_2 <- cnn_model %>% fit(
+  train_ds,
+  epochs = epochs,
+  validation_data = test_ds,
+  verbose=1
+)
+#Using learning rate lowered accuary 
+```
+
+```{r}
+str(cnn_history_2)
+plot(cnn_history_2)
+```
+
+### CNNs in Python.
+
+##### We tried also CNN with keras tuner for which the code is attached separately because it was implemented in python. Additionally we tried transfer learning in python (also with keras tuning) for which the code is also provided separately. The transfer learning approached gave the best accuracy. We did not have time to try to combine CNN preictions using the images with the predictions using demographic data along but it would be very interesting to combine the two to see if predictive power increases. We used 4 classes in this project (quartiles) but noticed that the CNNs had the best performance on the two extremes (1st and 4th quartile). Thus for future work, it might be a better idea to use either 3 classes (two extremes plus the average group), or just 2 classes. Another approach would be to use the CNNs to perform regression instead of classification. This might be more useful as a tool "in the wild". Lastly, we are stuck wondering what features in the images were providing the predictive power for test scores. We would like to implement some analysis like bounding boxes of SHAP to try to address the question.
