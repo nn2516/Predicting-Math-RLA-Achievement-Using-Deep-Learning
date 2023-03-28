@@ -1,0 +1,99 @@
+---
+title: "EDM conference"
+format: html
+editor: visual
+---
+
+### Load libraries:
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(caTools)
+library(caret)
+
+```
+
+### Load data set:
+
+```{r}
+
+data <- read.csv("Data_Table_11_elementary_with_cnn.csv")
+nrow(data)
+
+#convert urbanicity to factor
+data$urbanicity <- as.factor(data$urbanicity)
+
+```
+
+### Split data intro train, validation, and test:
+
+```{r}
+train.dat <- subset(data, ind_train == 1)
+val.dat <- subset(data, ind_val == 1)
+test.dat <- subset(data, ind_test == 1)
+```
+
+### Run multiple linear regression model:
+
+```{r}
+# model <- lm(cs_mn_avg_ol ~ ipr_est + student_teacher_ratio + perwht + + pernam + perasn + perhsp + perblk + perfl + perrl + perfrl + perecd + lep + disab_tot + urbanicity, data = train.dat)
+
+set.seed(1337)
+trctrl <- trainControl(method = "cv", number = 10)
+lm_model <- train(cs_mn_avg_ol ~ ipr_est + student_teacher_ratio + perwht + + pernam + perasn +
+                    perhsp + perblk + perfl + perrl + perfrl + perecd + lep + disab_tot +
+                    urbanicity, 
+                  method='lm',
+                  preProcess=c('scale', 'center'), 
+                  data=train.dat, 
+                  trControl=trctrl,
+                  na.action=na.exclude
+                  )
+
+```
+
+### Model stats:
+
+```{r}
+#lm model summary:
+summary(lm_model)
+
+#R squared = 0.7493
+
+#calculate residuals 
+modelResiduals <- as.data.frame(residuals(lm_model))
+
+#residuals plot
+ggplot(modelResiduals, aes(residuals(lm_model))) +
+  geom_histogram(fill="deepskyblue", color="black")
+
+## From the plot, we can see that the residuals are normally distributed 
+```
+
+### Generate predictions :
+
+```{r}
+#generate predictions in validation set 
+preds <- predict(lm_model, val.dat)
+```
+
+### Combine predictions with actual values:
+
+```{r}
+#create a dataframe of actual values (from test set) and predicted values (from val set)
+modelEval <- cbind(test.dat$cs_mn_avg_ol, preds)
+colnames(modelEval) <- c("Actual", "Predicted")
+modelEval <- as.data.frame(modelEval)
+```
+
+### MSE and RMSE calculations:
+
+```{r}
+#calculate mse and rmse
+mse <- mean((modelEval$Actual - modelEval$Predicted)^2, na.rm = TRUE)
+rmse <- sqrt(mse)
+mse
+rmse
+# rmse is 0.528 which means we’re on average wrong by 0.528 units of cs_mn_avg_ol
+```
